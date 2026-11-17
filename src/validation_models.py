@@ -1,5 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel, Field, ConfigDict, field_validator
+from typing import Any, Optional
 
 
 class ParamTypes(str, Enum):
@@ -8,17 +9,18 @@ class ParamTypes(str, Enum):
     BOOLEAN = "boolean"
 
 
-class ParamDescript(BaseModel):
+class ParamDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: ParamTypes
+    description: Optional[str] = None
 
 
 class FunctionDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    parameters: dict[str, ParamDescript]
-    returns: ParamDescript
+    parameters: dict[str, ParamDefinition]
+    returns: ParamDefinition
 
     @field_validator("name")
     @classmethod
@@ -39,8 +41,8 @@ class FunctionDefinition(BaseModel):
     @field_validator("parameters")
     @classmethod
     def validate_parameter_keys(
-        cls, parameters: dict[str, ParamDescript]
-    ) -> dict[str, ParamDescript]:
+        cls, parameters: dict[str, ParamDefinition]
+    ) -> dict[str, ParamDefinition]:
         for key in parameters:
             if not key.strip():
                 raise ValueError("Parameter names inside function definition"
@@ -66,7 +68,7 @@ class OutputEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
     prompt: str = Field(min_length=1)
     name: str = Field(min_length=1)
-    parameters: dict[str, float | str | bool]
+    parameters: dict[str, Any]
 
     @field_validator("name")
     @classmethod
