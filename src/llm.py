@@ -23,6 +23,7 @@ class Qwen3LLM:
 
         self.decoded_vocab: dict[int, str] = self._gen_decoded_vocab()
         self.allow_mask: npt.NDArray[np.bool_] = self._build_allow_mask()
+        self.text_to_ids: dict[str, list[int]] = self._gen_text_to_ids()
 
     def _gen_decoded_vocab(self) -> dict[int, str]:
         try:
@@ -44,6 +45,18 @@ class Qwen3LLM:
             decoded_vocab[v] = self._model.decode([v])
 
         return decoded_vocab
+
+    def _gen_text_to_ids(self) -> dict[str, list[int]]:
+        text_to_ids: dict[str, list[int]] = {}
+
+        for token_id, token in self.decoded_vocab.items():
+            if self.allow_mask[token_id]:
+                if token not in text_to_ids:
+                    text_to_ids[token] = []
+
+                text_to_ids[token].append(token_id)
+
+        return text_to_ids
 
     def _get_logits_size(self) -> int:
         token_ids: list[int] = self._model.encode("a").tolist()[0]

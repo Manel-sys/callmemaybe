@@ -1,12 +1,14 @@
 from .parser import Parser, ParserError
 from .llm import Qwen3LLM, LLMError
+from .decoder import Decoder
+from .function_caller import FunctionCaller
 import sys
 
 
 def main() -> None:
-    parser: Parser = Parser()
 
     try:
+        parser: Parser = Parser()
         func_defs, prompts = parser.parse()
     except ParserError as e:
         print(f"ParserError: {e}")
@@ -17,10 +19,6 @@ def main() -> None:
     print(parser.func_call_tests_path)
     print(parser.func_calls_path)
 
-    print("Validated function definitions:")
-    for func_def in func_defs:
-        print(func_def)
-
     try:
         llm = Qwen3LLM()
     except LLMError as e:
@@ -29,9 +27,13 @@ def main() -> None:
 
     print(len(llm.decoded_vocab))
     print(llm.logits_size)
-    logits = llm.get_logits_from_input_ids(llm.encode("There once was"))
-    print(logits)
-    print(llm.decode([999999]))
+
+    print(llm.encode("<|im_start|>"))
+    decoder = Decoder(llm)
+    func_caller: FunctionCaller = FunctionCaller(decoder, func_defs, prompts)
+
+    print("Testing gen_func_name:\n")
+    func_caller.orquestrate()
 
 
 if __name__ == "__main__":
