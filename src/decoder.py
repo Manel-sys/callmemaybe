@@ -77,51 +77,90 @@ class Decoder:
             '{"name": "'
         )
 
+    def _next_natural_position(self, name_ids: list[int],
+                               generated: str) -> int | None:
+        text: str = ""
+        for position, token_id in enumerate(name_ids):
+            if text == generated:
+                return position
+            text += self.model.decoded_vocab[token_id]
+            if len(text) > len(generated):
+                return None
+        return None
+
+    def _pick(self, sequence: list[int], allowed: set[int]) -> int:
+        if not allowed:
+            raise DecoderError("No possible solution found.")
+        if len(allowed) == 1:
+            return list(allowed)[0]
+        mask: npt.NDArray[np.bool_] = np.zeros(
+            self.model.logits_size, dtype=bool)
+        mask[list(allowed)] = True
+        logits: npt.NDArray[np.float32] = (
+            self.model.get_logits_from_input_ids(sequence))
+        masked: npt.NDArray[np.float32] = np.where(mask, logits, -np.inf)
+        return int(np.argmax(masked))
+
     def gen_func_name(self, sequence: list[int],
                       names: list[str]) -> str:
-        generated: str = ""
 
-        while True:
+        natural: dict[str, list[int]] = {
+            name: self.model.encode(name) for name in names}
+        generated: str = ""
+        max_steps: int = max(len(name) for name in names) + 1
+
+        for _ in range(max_steps):
             candidates: list[str] = [name for name in names
                                      if name.startswith(generated)]
+            if not candidates:
+                raise DecoderError(
+                    f"No function name starts with {generated}.")
 
             complete: bool = generated in names
             if complete and len(candidates) == 1:
                 return generated
 
+            if len(candidates) == 1:
+                name: str = candidates[0]
+                position: int | None = self._next_natural_position(
+                    natural[name], generated)
+                if position is not None:
+                    rest_ids: list[int] = natural[name][position:]
+                else:
+                    rest_ids = self.model.encode(name[len(generated):])
+                sequence.extend(rest_ids)
+                return name
+
+            next_ids: list[int | None] = []
+            for name in candidates:
+                pos: int | None = self._next_natural_position(
+                    natural[name], generated)
+                if pos is None:
+                    next_ids.append(None)
+                else:
+                    next_ids.append(natural[name][pos])
+
+            first: int | None = next_ids[0]
+            if (not complete and first is not None
+                    and all(i == first for i in next_ids)):
+                sequence.append(first)
+                generated += self.model.decoded_vocab[first]
+                continue
+
             allowed: set[int] = set()
             for name in candidates:
-                rest = name[len(generated):]
+                rest: str = name[len(generated):]
                 for k in range(1, len(rest) + 1):
                     allowed.update(self.model.text_to_ids.get(rest[:k], []))
-
             if complete:
                 allowed.update(self.model.text_to_ids.get('"', []))
 
-            if not allowed:
-                raise DecoderError("No possible solution found.")
-
-            if len(allowed) == 1:
-                token_id: int = list(allowed)[0]
-            else:
-                mask: npt.NDArray[np.bool_] = np.zeros(
-                    self.model.logits_size, dtype=bool)
-
-                mask[list(allowed)] = True
-
-                logits: npt.NDArray[np.float32] = (
-                    self.model.get_logits_from_input_ids(sequence)
-                    )
-
-                masked: npt.NDArray[np.float32] = np.where(
-                    mask, logits, -np.inf)
-
-                token_id = int(np.argmax(masked))
-
-            token = self.model.decoded_vocab[token_id]
-
+            token_id: int = self._pick(sequence, allowed)
+            token: str = self.model.decoded_vocab[token_id]
             if token == '"':
                 return generated
 
             sequence.append(token_id)
             generated += token
+
+        raise DecoderError("Function name generation did not finish.")
