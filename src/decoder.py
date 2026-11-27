@@ -3,6 +3,7 @@ from .validation_models import FunctionDefinition
 from typing import Any
 import numpy as np
 import numpy.typing as npt
+from .grammar import Grammar, State
 import json
 
 
@@ -11,6 +12,8 @@ class DecoderError(Exception):
 
 
 class Decoder:
+    MAX_NUMBER_TOKENS: int = 20
+
     example_calls: list[tuple[str, str, dict[str, Any]]] = [
          ("What is 7 times -3?",
           "fn_multiply", {"x": 7, "y": -3}),
@@ -26,6 +29,43 @@ class Decoder:
 
     def __init__(self, model: Qwen3LLM) -> None:
         self.model: Qwen3LLM = model
+        self.state_masks: dict[State, npt.NDArray[np.bool_]] = (
+            self._build_state_masks())
+        self.terminator_masks: dict[str, npt.NDArray[np.bool_]] = (
+            self._build_terminator_masks()
+        )
+
+    def _build_state_masks(self) -> dict[State, npt.NDArray[np.bool_]]:
+        state_masks: dict[State, npt.NDArray[np.bool_]] = {}
+        for state in State:
+            mask: npt.NDArray[np.bool_] = np.zeros(self.model.logits_size,
+                                                   dtype=bool)
+            for token_id, token_text in self.model.decoded_vocab.items():
+                if Grammar.transition_token(state, token_text) is not None:
+                    mask[token_id] = True
+
+            mask &= self.model.allow_mask
+            state_masks[state] = mask
+
+        return state_masks
+
+    def _build_terminator_masks(self) -> dict[str, npt.NDArray[np.bool_]]:
+        terminator_masks: dict[str, npt.NDArray[np.bool_]] = {}
+
+        for terminator in (",", "}"):
+            token_ids: list[int] = self.model.text_to_ids.get(terminator, [])
+            if not token_ids:
+                raise DecoderError(
+                    f"No token in the vocabulary is exactly '{terminator}'.")
+
+            mask: npt.NDArray[np.bool_] = np.zeros(self.model.logits_size,
+                                                   dtype=bool)
+
+            mask[token_ids] = True
+
+            terminator_masks[terminator] = mask
+
+        return terminator_masks
 
     @staticmethod
     def format_call(name: str, parameters: dict[str, Any]) -> str:
@@ -173,3 +213,39 @@ class Decoder:
             generated += token
 
         raise DecoderError("Function name generation did not finish.")
+
+    def gen_number(self, sequence: list[int], terminator: str) -> float:
+        state: State = State.NUMBER_START
+        generated: str = ""
+
+        for step in range(self.MAX_NUMBER_TOKENS):
+            steps_left: int = self.MAX_NUMBER_TOKENS - step
+            can_end: bool = state in Grammar.END_CAPABLE
+
+            if can_end and steps_left <= 2:
+                mask: npt.NDArray[np.bool_] = self.terminator_masks[terminator]
+            elif can_end:
+                mask = (self.state_masks[state]
+                        | self.terminator_masks[terminator])
+            else:
+                mask = self.state_masks[state]
+
+            allowed: set[int] = set(np.flatnonzero(mask).tolist())
+            token_id: int = self._pick(sequence, allowed)
+            sequence.append(token_id)
+
+            token_text: str = self.model.decoded_vocab[token_id]
+            if token_text == terminator:
+                return float(generated)
+
+            next_state: State | None = Grammar.transition_token(state,
+                                                                token_text)
+            if next_state is None:
+                raise DecoderError(f"Invalid token '{token_text}'"
+                                   f" after number '{generated}'.")
+
+            generated += token_text
+            state = next_state
+
+        raise DecoderError(f"Number generation did not finish: {generated}")
+            

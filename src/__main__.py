@@ -3,6 +3,7 @@ from .llm import Qwen3LLM, LLMError
 from .decoder import Decoder
 from .function_caller import FunctionCaller
 import sys
+import time
 
 
 def main() -> None:
@@ -29,11 +30,17 @@ def main() -> None:
     print(llm.logits_size)
 
     print(llm.encode("<|im_start|>"))
+    start: float = time.perf_counter()
     decoder = Decoder(llm)
+    end: float = time.perf_counter() - start
+    print(f"It takes {end:.2f}s to build the state masks")
+    print("State masks contents:")
+    for state, mask in decoder.state_masks.items():
+        print(f"{state.name:<22} {int(mask.sum())} tokens")
     func_caller: FunctionCaller = FunctionCaller(decoder, func_defs, prompts)
 
     print("Testing gen_func_name:\n")
-    func_caller.orquestrate()
+    func_caller.orchestrate()
 
 
 if __name__ == "__main__":
