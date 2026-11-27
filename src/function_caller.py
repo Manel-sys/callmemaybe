@@ -8,11 +8,10 @@ from .validation_models import (FunctionDefinition, OutputEntry,
 
 
 class FunctionCaller:
-
     def __init__(self, decoder: Decoder,
                  func_defs: list[FunctionDefinition],
                  prompts: list[PromptDescript]) -> None:
-        """Store the decoder, the function definitions and the prompts."""
+
         self.decoder: Decoder = decoder
         self.func_defs: list[FunctionDefinition] = func_defs
         self.prompts: list[str] = [item.prompt for item in prompts]
@@ -23,10 +22,19 @@ class FunctionCaller:
     def _append_text(self, sequence: list[int], text: str) -> None:
         sequence.extend(self.decoder.model.encode(text))
 
+    @staticmethod
+    def _key_text(key: str, param_def: ParamDefinition) -> str:
+        text: str = f"{json.dumps(key)}: "
+        if param_def.type == ParamTypes.STRING:
+            text += '"'
+        return text
+
     def _gen_value(self, sequence: list[int], param_def: ParamDefinition,
                    terminator: str) -> float | str | bool:
         if param_def.type == ParamTypes.NUMBER:
             return self.decoder.gen_number(sequence, terminator)
+        elif param_def.type == ParamTypes.STRING:
+            return self.decoder.gen_string(sequence, terminator)
         raise DecoderError(
             f"Generating '{param_def.type.value}' values is not "
             "implemented yet.")
@@ -34,27 +42,32 @@ class FunctionCaller:
     def _gen_parameters(self, sequence: list[int],
                         func_def: FunctionDefinition
                         ) -> dict[str, float | str | bool]:
-        keys: list[str] = list(func_def.parameters)
+        params: dict[str, ParamDefinition] = func_def.parameters
+        keys: list[str] = list(params)
         values: dict[str, float | str | bool] = {}
 
         if not keys:
             self._append_text(sequence, '", "parameters": {}}')
             return values
 
-        self._append_text(sequence,
-                          f'", "parameters": {{{json.dumps(keys[0])}: ')
+        self._append_text(
+            sequence, ('", "parameters": {' +
+                       self._key_text(keys[0], params[keys[0]])))
 
         for k, key in enumerate(keys):
             is_last: bool = k == len(keys) - 1
             terminator: str = "}" if is_last else ","
 
             values[key] = self._gen_value(
-                sequence, func_def.parameters[key], terminator)
+                sequence, params[key], terminator)
 
             if is_last:
                 self._append_text(sequence, "}")
             else:
-                self._append_text(sequence, f" {json.dumps(keys[k + 1])}: ")
+                next_key: str = keys[k + 1]
+                self._append_text(
+                    sequence,
+                    " " + self._key_text(next_key, params[next_key]))
 
         return values
 

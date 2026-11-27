@@ -8,12 +8,15 @@ class State(Enum):
     NUMBER_INT_DIGITS = "number_int_digits"
     NUMBER_AFTER_DOT = "number_after_dot"
     NUMBER_FRAC_DIGITS = "number_frac_digits"
+    STRING_CONTENT = "string_content"
+    STRING_AFTER_BACKSLASH = "string_after_backslash"
 
 
 class Grammar:
     END_CAPABLE: set[State] = {State.NUMBER_LEADING_ZERO,
                                State.NUMBER_INT_DIGITS,
-                               State.NUMBER_FRAC_DIGITS}
+                               State.NUMBER_FRAC_DIGITS,
+                               State.STRING_CONTENT}
 
     @staticmethod
     def transition(state: State, char: str) -> State | None:
@@ -58,6 +61,22 @@ class Grammar:
         if state == State.NUMBER_FRAC_DIGITS:
             if char in "0123456789":
                 return State.NUMBER_FRAC_DIGITS
+            else:
+                return None
+
+        if state == State.STRING_CONTENT:
+            if char == "\\":
+                return State.STRING_AFTER_BACKSLASH
+            elif char == '"':
+                return None
+            elif ord(char) < 32:
+                return None
+            else:
+                return State.STRING_CONTENT
+
+        if state == State.STRING_AFTER_BACKSLASH:
+            if char in '"\\/bfnrt':
+                return State.STRING_CONTENT
             else:
                 return None
 

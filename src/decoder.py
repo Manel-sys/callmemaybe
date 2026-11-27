@@ -1,5 +1,3 @@
-"""Constrained decoding: turn model logits into a valid function call."""
-
 import json
 from typing import Any
 
@@ -16,10 +14,11 @@ class DecoderError(Exception):
 
 
 class Decoder:
-    MAX_NUMBER_TOKENS: int = 20
+    MAX_NUMBER_TOKENS: int = 12
+    MAX_STRING_TOKENS: int = 64
 
     NAME_EXAMPLES: int = 3
-    VALUE_EXAMPLES: int = 6
+    VALUE_EXAMPLES: int = 7
 
     example_calls: tuple[tuple[str, str, dict[str, Any]], ...] = (
         ("What is 7 times -3?",
@@ -32,8 +31,22 @@ class Decoder:
          "fn_set_light", {"room": "kitchen", "on": False}),
         ("Count the words in ''",
          "fn_count_words", {"text": ""}),
-        (r"Find files matching \d+\.log",
-         "fn_find_files", {"pattern": r"\d+\.log"}),
+        (r"Open the file C:\Users\ana\notes.txt",
+         "fn_open_file", {"path": r"C:\Users\ana\notes.txt"}),
+        ("Join 'red green blue' with stars",
+         "fn_join_words", {"text": "red green blue", "separator": "*"}),
+        ("Replace each comma in 'a,b,c' with stars",
+         "fn_replace_pattern",
+         {"text": "a,b,c", "pattern": ",", "replacement": "*"}),
+        ("Remove all uppercase letters from 'HeLLo WoRLD'",
+         "fn_replace_pattern",
+         {"text": "HeLLo WoRLD", "pattern": "[A-Z]", "replacement": ""}),
+        ("Replace every word in 'one two three' with X",
+         "fn_replace_pattern",
+         {"text": "one two three", "pattern": r"\w+", "replacement": "X"}),
+        ("Remove the punctuation from 'Hi, there! Ok?'",
+         "fn_replace_pattern",
+         {"text": "Hi, there! Ok?", "pattern": r"[^\w\s]", "replacement": ""}),
     )
 
     def __init__(self, model: Qwen3LLM) -> None:
@@ -61,7 +74,7 @@ class Decoder:
     def _build_terminator_masks(self) -> dict[str, npt.NDArray[np.bool_]]:
         terminator_masks: dict[str, npt.NDArray[np.bool_]] = {}
 
-        for terminator in (",", "}"):
+        for terminator in (",", "}", '",', '"}'):
             token_ids: list[int] = self.model.text_to_ids.get(terminator, [])
             if not token_ids:
                 raise DecoderError(
@@ -125,6 +138,9 @@ class Decoder:
             "request.\n"
             "Copy text arguments exactly as they appear in the request. "
             "An empty quoted text ('' or \"\") is an empty string.\n"
+            "A request that asks to substitute, replace, join something"
+            " with a symbol, for example asterisk, should map asterisk to "
+            "a single *.\n"
             "Answer only with JSON in this format:\n"
             '{"name": "<function name>", "parameters": {...}}\n'
             "\n"
@@ -261,11 +277,51 @@ class Decoder:
             next_state: State | None = Grammar.transition_token(state,
                                                                 token_text)
             if next_state is None:
-                raise DecoderError(f"Invalid token {token_text!r} after "
-                                   f"number {generated!r}.")
+                raise DecoderError(f"Invalid token '{token_text}' after "
+                                   f"number '{generated}'.")
 
             generated += token_text
             state = next_state
 
         raise DecoderError(
-            f"Number generation did not finish: {generated!r}.")
+            f"Number generation did not finish: '{generated}'.")
+
+    def gen_string(self, sequence: list[int], terminator: str) -> str:
+        state: State = State.STRING_CONTENT
+        generated: str = ""
+
+        end_token_text: str = '"' + terminator
+
+        for step in range(self.MAX_STRING_TOKENS):
+            steps_left: int = self.MAX_STRING_TOKENS - step
+            can_end: bool = state in Grammar.END_CAPABLE
+
+            if can_end and steps_left <= 2:
+                mask: npt.NDArray[np.bool_] = (
+                    self.terminator_masks[end_token_text])
+            elif can_end:
+                mask = (self.state_masks[state]
+                        | self.terminator_masks[end_token_text])
+            else:
+                mask = self.state_masks[state]
+
+            allowed: set[int] = set(np.flatnonzero(mask).tolist())
+            token_id: int = self._pick(sequence, allowed)
+            sequence.append(token_id)
+
+            token_text: str = self.model.decoded_vocab[token_id]
+            if token_text == end_token_text:
+                value: str = json.loads('"' + generated + '"')
+                return value
+
+            next_state: State | None = Grammar.transition_token(state,
+                                                                token_text)
+            if next_state is None:
+                raise DecoderError(f"Invalid token '{token_text}'"
+                                   f"inside string '{generated}'.")
+
+            generated += token_text
+            state = next_state
+
+        raise DecoderError("String generation did not finish: "
+                           f"'{generated}'.")
