@@ -72,8 +72,6 @@ class FunctionCaller:
                                                    self.func_names)
             func_def: FunctionDefinition = self.funcs_by_name[name]
 
-            # Values are generated from a shorter prompt that shows only
-            # the chosen function.
             sequence: list[int] = self.decoder.model.encode(
                 self.decoder.build_value_prompt(prompt, func_def))
 
