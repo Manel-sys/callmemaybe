@@ -173,5 +173,3 @@ class Decoder:
             generated += token
 
         raise DecoderError("Function name generation did not finish.")
-
-        
