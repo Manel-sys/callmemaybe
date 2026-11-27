@@ -12,6 +12,7 @@ class FunctionCaller:
     def __init__(self, decoder: Decoder,
                  func_defs: list[FunctionDefinition],
                  prompts: list[PromptDescript]) -> None:
+        """Store the decoder, the function definitions and the prompts."""
         self.decoder: Decoder = decoder
         self.func_defs: list[FunctionDefinition] = func_defs
         self.prompts: list[str] = [item.prompt for item in prompts]
@@ -33,7 +34,6 @@ class FunctionCaller:
     def _gen_parameters(self, sequence: list[int],
                         func_def: FunctionDefinition
                         ) -> dict[str, float | str | bool]:
-
         keys: list[str] = list(func_def.parameters)
         values: dict[str, float | str | bool] = {}
 
@@ -59,29 +59,38 @@ class FunctionCaller:
         return values
 
     def orchestrate(self) -> list[OutputEntry]:
-
         results: list[OutputEntry] = []
         total_start: float = time.perf_counter()
 
         for prompt in self.prompts:
             start: float = time.perf_counter()
+            calls_before: int = self.decoder.model_calls
 
+            name_sequence: list[int] = self.decoder.model.encode(
+                self.decoder.build_name_prompt(prompt, self.func_defs))
+            name: str = self.decoder.gen_func_name(name_sequence,
+                                                   self.func_names)
+            func_def: FunctionDefinition = self.funcs_by_name[name]
+
+            # Values are generated from a shorter prompt that shows only
+            # the chosen function.
             sequence: list[int] = self.decoder.model.encode(
-                self.decoder.build_prompt(prompt, self.func_defs))
-            name: str = self.decoder.gen_func_name(sequence, self.func_names)
+                self.decoder.build_value_prompt(prompt, func_def))
 
             try:
                 parameters: dict[str, float | str | bool] = (
-                    self._gen_parameters(sequence, self.funcs_by_name[name]))
+                    self._gen_parameters(sequence, func_def))
             except DecoderError as e:
-                print(f"Skipped '{prompt}': {e}", file=sys.stderr)
+                print(f"Skipped {prompt!r}: {e}", file=sys.stderr)
                 continue
 
             results.append(OutputEntry(prompt=prompt, name=name,
                                        parameters=parameters))
 
             elapsed: float = time.perf_counter() - start
-            print(f"{elapsed:.2f}s {name} {parameters} <- {prompt}")
+            calls: int = self.decoder.model_calls - calls_before
+            print(f"{elapsed:.2f}s {calls} calls "
+                  f"{name} {parameters} <- {prompt}")
 
         total: float = time.perf_counter() - total_start
         print(f"Total: {total:.2f}s for {len(self.prompts)} prompts")

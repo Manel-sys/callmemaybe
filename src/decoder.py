@@ -1,10 +1,14 @@
-from .llm import Qwen3LLM
-from .validation_models import FunctionDefinition
+"""Constrained decoding: turn model logits into a valid function call."""
+
+import json
 from typing import Any
+
 import numpy as np
 import numpy.typing as npt
+
 from .grammar import Grammar, State
-import json
+from .llm import Qwen3LLM
+from .validation_models import FunctionDefinition
 
 
 class DecoderError(Exception):
@@ -14,26 +18,31 @@ class DecoderError(Exception):
 class Decoder:
     MAX_NUMBER_TOKENS: int = 20
 
-    example_calls: list[tuple[str, str, dict[str, Any]]] = [
-         ("What is 7 times -3?",
-          "fn_multiply", {"x": 7, "y": -3}),
-         ("Translate 'good morning' into French",
-          "fn_translate", {"text": "good morning", "language": "French"}),
-         ("Turn off the kitchen lights",
-          "fn_set_light", {"room": "kitchen", "on": False}),
-         ("Count the words in ''",
-          "fn_count_words", {"text": ""}),
-         (r"Find files matching \d+\.log",
-          "fn_find_files", {"pattern": r"\d+\.log"}),
-        ]
+    NAME_EXAMPLES: int = 3
+    VALUE_EXAMPLES: int = 6
+
+    example_calls: tuple[tuple[str, str, dict[str, Any]], ...] = (
+        ("What is 7 times -3?",
+         "fn_multiply", {"x": 7, "y": -3}),
+        ("Calculate the cube of 27",
+         "fn_cube", {"n": 27}),
+        ("Translate 'good morning' into French",
+         "fn_translate", {"text": "good morning", "language": "French"}),
+        ("Turn off the kitchen lights",
+         "fn_set_light", {"room": "kitchen", "on": False}),
+        ("Count the words in ''",
+         "fn_count_words", {"text": ""}),
+        (r"Find files matching \d+\.log",
+         "fn_find_files", {"pattern": r"\d+\.log"}),
+    )
 
     def __init__(self, model: Qwen3LLM) -> None:
         self.model: Qwen3LLM = model
         self.state_masks: dict[State, npt.NDArray[np.bool_]] = (
             self._build_state_masks())
         self.terminator_masks: dict[str, npt.NDArray[np.bool_]] = (
-            self._build_terminator_masks()
-        )
+            self._build_terminator_masks())
+        self.model_calls: int = 0
 
     def _build_state_masks(self) -> dict[State, npt.NDArray[np.bool_]]:
         state_masks: dict[State, npt.NDArray[np.bool_]] = {}
@@ -56,66 +65,90 @@ class Decoder:
             token_ids: list[int] = self.model.text_to_ids.get(terminator, [])
             if not token_ids:
                 raise DecoderError(
-                    f"No token in the vocabulary is exactly '{terminator}'.")
+                    f"No token in the vocabulary is exactly {terminator!r}.")
 
             mask: npt.NDArray[np.bool_] = np.zeros(self.model.logits_size,
                                                    dtype=bool)
-
             mask[token_ids] = True
-
             terminator_masks[terminator] = mask
 
         return terminator_masks
 
     @staticmethod
     def format_call(name: str, parameters: dict[str, Any]) -> str:
-        """Return a function call as JSON, with the decoder's exact spacing."""
         return json.dumps({"name": name, "parameters": parameters},
                           ensure_ascii=False)
 
     @staticmethod
     def format_function(func: FunctionDefinition) -> str:
-        """Return one function as a compact signature line."""
         params: str = ", ".join(
             f"{param_name}: {param_def.type.value}"
             for param_name, param_def in func.parameters.items()
         )
         return f"- {func.name}({params}): {func.description}"
 
-    def build_prompt(self, prompt: str,
-                     func_defs: list[FunctionDefinition]) -> str:
-        """Build the full model input for one request.
-
-        The text ends with the opening of the answer, so the model's next
-        token is the first token of the function name.
-        """
-        functions: str = "\n".join(self.format_function(f) for f in func_defs)
-        examples: str = "\n".join(
+    def _format_examples(self, count: int) -> str:
+        return "\n".join(
             f"Request: {request}\nAnswer: {self.format_call(name, params)}"
-            for request, name, params in self.example_calls
+            for request, name, params in self.example_calls[:count]
         )
 
+    @staticmethod
+    def _chat(system: str, prompt: str, answer_start: str) -> str:
+        return (
+            f"<|im_start|>system\n{system}<|im_end|>\n"
+            f"<|im_start|>user\n{prompt}<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            f"{answer_start}"
+        )
+
+    def build_name_prompt(self, prompt: str,
+                          func_defs: list[FunctionDefinition]) -> str:
+        functions: str = "\n".join(self.format_function(f) for f in func_defs)
         system: str = (
             "You translate a user request into a single function call.\n"
-            "Pick the one function that matches the request and fill in "
-            "its arguments.\n"
-            "Copy text arguments exactly as they appear in the request. "
-            "An empty quoted text ('' or \"\") is an empty string.\n"
+            "Pick the one function that matches the request.\n"
             "Answer only with JSON in this format:\n"
             '{"name": "<function name>", "parameters": {...}}\n'
             "\n"
             f"Available functions:\n{functions}\n"
             "\n"
             "Examples (these example functions are not available):\n"
-            f"{examples}"
+            f"{self._format_examples(self.NAME_EXAMPLES)}"
         )
+        return self._chat(system, prompt, '{"name": "')
 
-        return (
-            f"<|im_start|>system\n{system}<|im_end|>\n"
-            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-            "<|im_start|>assistant\n<think>\n\n</think>\n\n"
-            '{"name": "'
+    def build_value_prompt(self, prompt: str,
+                           func_def: FunctionDefinition) -> str:
+        system: str = (
+            "You fill in the arguments of a function call for a user "
+            "request.\n"
+            "Copy text arguments exactly as they appear in the request. "
+            "An empty quoted text ('' or \"\") is an empty string.\n"
+            "Answer only with JSON in this format:\n"
+            '{"name": "<function name>", "parameters": {...}}\n'
+            "\n"
+            f"Function:\n{self.format_function(func_def)}\n"
+            "\n"
+            "Examples (these example functions are not available):\n"
+            f"{self._format_examples(self.VALUE_EXAMPLES)}"
         )
+        return self._chat(system, prompt, '{"name": "' + func_def.name)
+
+    def _pick(self, sequence: list[int], allowed: set[int]) -> int:
+        if not allowed:
+            raise DecoderError("No possible solution found.")
+        if len(allowed) == 1:
+            return next(iter(allowed))
+
+        mask: npt.NDArray[np.bool_] = np.zeros(
+            self.model.logits_size, dtype=bool)
+        mask[list(allowed)] = True
+        logits: npt.NDArray[np.float32] = (
+            self.model.get_logits_from_input_ids(sequence))
+        self.model_calls += 1
+        masked: npt.NDArray[np.float32] = np.where(mask, logits, -np.inf)
+        return int(np.argmax(masked))
 
     def _next_token_position(self, name_ids: list[int],
                              generated: str) -> int | None:
@@ -127,19 +160,6 @@ class Decoder:
             if len(text) > len(generated):
                 return None
         return None
-
-    def _pick(self, sequence: list[int], allowed: set[int]) -> int:
-        if not allowed:
-            raise DecoderError("No possible solution found.")
-        if len(allowed) == 1:
-            return list(allowed)[0]
-        mask: npt.NDArray[np.bool_] = np.zeros(
-            self.model.logits_size, dtype=bool)
-        mask[list(allowed)] = True
-        logits: npt.NDArray[np.float32] = (
-            self.model.get_logits_from_input_ids(sequence))
-        masked: npt.NDArray[np.float32] = np.where(mask, logits, -np.inf)
-        return int(np.argmax(masked))
 
     def gen_func_name(self, sequence: list[int],
                       names: list[str]) -> str:
@@ -241,11 +261,11 @@ class Decoder:
             next_state: State | None = Grammar.transition_token(state,
                                                                 token_text)
             if next_state is None:
-                raise DecoderError(f"Invalid token '{token_text}'"
-                                   f" after number '{generated}'.")
+                raise DecoderError(f"Invalid token {token_text!r} after "
+                                   f"number {generated!r}.")
 
             generated += token_text
             state = next_state
 
-        raise DecoderError(f"Number generation did not finish: {generated}")
-            
+        raise DecoderError(
+            f"Number generation did not finish: {generated!r}.")
