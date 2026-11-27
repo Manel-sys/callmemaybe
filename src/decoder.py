@@ -77,8 +77,8 @@ class Decoder:
             '{"name": "'
         )
 
-    def _next_natural_position(self, name_ids: list[int],
-                               generated: str) -> int | None:
+    def _next_token_position(self, name_ids: list[int],
+                             generated: str) -> int | None:
         text: str = ""
         for position, token_id in enumerate(name_ids):
             if text == generated:
@@ -103,18 +103,20 @@ class Decoder:
 
     def gen_func_name(self, sequence: list[int],
                       names: list[str]) -> str:
-
-        natural: dict[str, list[int]] = {
+        func_name_ids: dict[str, list[int]] = {
             name: self.model.encode(name) for name in names}
         generated: str = ""
+        committed: set[str] | None = None
         max_steps: int = max(len(name) for name in names) + 1
 
         for _ in range(max_steps):
-            candidates: list[str] = [name for name in names
-                                     if name.startswith(generated)]
+            candidates: list[str] = [
+                name for name in names
+                if name.startswith(generated)
+                and (committed is None or name in committed)]
             if not candidates:
                 raise DecoderError(
-                    f"No function name starts with {generated}.")
+                    f"No function name starts with {generated!r}.")
 
             complete: bool = generated in names
             if complete and len(candidates) == 1:
@@ -122,10 +124,10 @@ class Decoder:
 
             if len(candidates) == 1:
                 name: str = candidates[0]
-                position: int | None = self._next_natural_position(
-                    natural[name], generated)
+                position: int | None = self._next_token_position(
+                    func_name_ids[name], generated)
                 if position is not None:
-                    rest_ids: list[int] = natural[name][position:]
+                    rest_ids: list[int] = func_name_ids[name][position:]
                 else:
                     rest_ids = self.model.encode(name[len(generated):])
                 sequence.extend(rest_ids)
@@ -133,12 +135,10 @@ class Decoder:
 
             next_ids: list[int | None] = []
             for name in candidates:
-                pos: int | None = self._next_natural_position(
-                    natural[name], generated)
-                if pos is None:
-                    next_ids.append(None)
-                else:
-                    next_ids.append(natural[name][pos])
+                pos: int | None = self._next_token_position(
+                    func_name_ids[name], generated)
+                next_ids.append(None if pos is None
+                                else func_name_ids[name][pos])
 
             first: int | None = next_ids[0]
             if (not complete and first is not None
@@ -148,7 +148,10 @@ class Decoder:
                 continue
 
             allowed: set[int] = set()
-            for name in candidates:
+            for name, next_id in zip(candidates, next_ids):
+                if next_id is not None:
+                    allowed.add(next_id)
+                    continue
                 rest: str = name[len(generated):]
                 for k in range(1, len(rest) + 1):
                     allowed.update(self.model.text_to_ids.get(rest[:k], []))
@@ -160,7 +163,15 @@ class Decoder:
             if token == '"':
                 return generated
 
+            chosen: set[str] = {
+                name for name, next_id in zip(candidates, next_ids)
+                if next_id == token_id}
+            if chosen:
+                committed = chosen
+
             sequence.append(token_id)
             generated += token
 
         raise DecoderError("Function name generation did not finish.")
+
+        

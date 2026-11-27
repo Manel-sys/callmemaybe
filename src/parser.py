@@ -101,6 +101,19 @@ class Parser:
                 messages.append(err["msg"])
         return "; ".join(messages)
 
+    @staticmethod
+    def only_unsupported_types(error: ValidationError) -> bool:
+        """Return True if every problem is a parameter or return type
+        that is not one of the supported types.
+
+        Pydantic reports a value outside an Enum with the error type
+        "enum", and the location of a type field ends with "type".
+        """
+        return all(
+            err["type"] == "enum" and err["loc"][-1:] == ("type",)
+            for err in error.errors()
+        )
+
     def parse(self) -> tuple[list[FunctionDefinition], list[PromptDescript]]:
         func_definitions: list[FunctionDefinition] = []
         prompts: list[PromptDescript] = []
@@ -111,10 +124,17 @@ class Parser:
             try:
                 func_def = FunctionDefinition.model_validate(item)
             except ValidationError as e:
-                raise ParserError(f"{self.func_defs_path},"
-                                  f" entry {index}: "
-                                  f"{self.format_validation_error(e)}"
-                                  )
+                if not self.only_unsupported_types(e):
+                    raise ParserError(f"{self.func_defs_path},"
+                                      f" entry {index}: "
+                                      f"{self.format_validation_error(e)}"
+                                      )
+
+                print(f"Warning: {self.func_defs_path}, entry {index}: "
+                      "skipping function with an unsupported type: "
+                      f"{self.format_validation_error(e)}",
+                      file=sys.stderr)
+                continue
 
             if func_def.name in func_names:
                 raise ParserError(f"{self.func_defs_path}, entry {index}:"
@@ -126,10 +146,10 @@ class Parser:
             func_definitions.append(func_def)
 
         if not func_definitions:
-            raise ParserError("No function tools were provided in file: "
+            raise ParserError("No usable function definitions in file: "
                               f"{self.func_defs_path}."
-                              "\nAt least one function definition must"
-                              " be provided.")
+                              "\nAt least one function definition with"
+                              " supported types must be provided.")
 
         for index, item in enumerate(
                         self.load_json_list(self.func_call_tests_path)):
