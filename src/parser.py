@@ -103,12 +103,6 @@ class Parser:
 
     @staticmethod
     def only_unsupported_types(error: ValidationError) -> bool:
-        """Return True if every problem is a parameter or return type
-        that is not one of the supported types.
-
-        Pydantic reports a value outside an Enum with the error type
-        "enum", and the location of a type field ends with "type".
-        """
         return all(
             err["type"] == "enum" and err["loc"][-1:] == ("type",)
             for err in error.errors()
