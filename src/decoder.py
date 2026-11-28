@@ -121,7 +121,6 @@ class Decoder:
 
     def _format_examples(
             self, examples: list[tuple[str, str, dict[str, Any]]]) -> str:
-        """Return the given few-shot examples as Request/Answer lines."""
         return "\n".join(
             f"Request: {request}\nAnswer: {self.format_call(name, params)}"
             for request, name, params in examples
