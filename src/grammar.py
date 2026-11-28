@@ -20,12 +20,12 @@ class Grammar:
                                State.NUMBER_FRAC_DIGITS,
                                State.STRING_CONTENT,
                                }
-    
+
     STRING_STATES: tuple[State, ...] = (State.STRING_START,
                                         State.STRING_AFTER_SPACE,
                                         State.STRING_CONTENT,
                                         State.STRING_AFTER_BACKSLASH)
-    
+
     STRING_ENDS: tuple[str, ...] = ('",', '"}')
 
     @staticmethod
