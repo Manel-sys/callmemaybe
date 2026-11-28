@@ -126,8 +126,7 @@ class Parser:
 
                 print(f"Warning: {self.func_defs_path}, entry {index}: "
                       "skipping function with an unsupported type: "
-                      f"{self.format_validation_error(e)}",
-                      file=sys.stderr)
+                      f"{self.format_validation_error(e)}\n")
                 continue
 
             if func_def.name in func_names:
@@ -146,16 +145,16 @@ class Parser:
                               " supported types must be provided.")
 
         for index, item in enumerate(
-                        self.load_json_list(self.func_call_tests_path)):
+                self.load_json_list(self.func_call_tests_path)):
             try:
-                prompts.append(
-                    PromptDescript.model_validate(item)
-                )
+                prompt = PromptDescript.model_validate(item)
             except ValidationError as e:
-                raise ParserError(f"{self.func_call_tests_path},"
-                                  f" entry {index}: "
-                                  f"{self.format_validation_error(e)}"
-                                  )
+                print(f"Warning: {self.func_call_tests_path}, entry {index}: "
+                      "skipping invalid prompt: "
+                      f"{self.format_validation_error(e)}\n")
+                continue
+
+            prompts.append(prompt)
 
         if not prompts:
             raise ParserError("No prompts were provided in file: "

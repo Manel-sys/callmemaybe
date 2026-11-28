@@ -18,7 +18,15 @@ class Grammar:
     END_CAPABLE: set[State] = {State.NUMBER_LEADING_ZERO,
                                State.NUMBER_INT_DIGITS,
                                State.NUMBER_FRAC_DIGITS,
-                               State.STRING_CONTENT}
+                               State.STRING_CONTENT,
+                               }
+    
+    STRING_STATES: tuple[State, ...] = (State.STRING_START,
+                                        State.STRING_AFTER_SPACE,
+                                        State.STRING_CONTENT,
+                                        State.STRING_AFTER_BACKSLASH)
+    
+    STRING_ENDS: tuple[str, ...] = ('",', '"}')
 
     @staticmethod
     def transition(state: State, char: str) -> State | None:
