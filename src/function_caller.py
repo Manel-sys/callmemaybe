@@ -1,3 +1,5 @@
+"""Run the decoder over every prompt and collect the function calls."""
+
 import json
 import sys
 import time
@@ -8,10 +10,12 @@ from .validation_models import (FunctionDefinition, OutputEntry,
 
 
 class FunctionCaller:
+    """Turn each prompt into a function call, using the decoder."""
+
     def __init__(self, decoder: Decoder,
                  func_defs: list[FunctionDefinition],
                  prompts: list[PromptDescript]) -> None:
-
+        """Store the decoder, the function definitions and the prompts."""
         self.decoder: Decoder = decoder
         self.func_defs: list[FunctionDefinition] = func_defs
         self.prompts: list[str] = [item.prompt for item in prompts]
@@ -20,20 +24,28 @@ class FunctionCaller:
             item.name: item for item in func_defs}
 
     def _append_text(self, sequence: list[int], text: str) -> None:
+        """Encode a fixed piece of text and add it to the sequence."""
         sequence.extend(self.decoder.model.encode(text))
 
     @staticmethod
     def _key_text(key: str, param_def: ParamDefinition) -> str:
-        text: str = f"{json.dumps(key)}: "
+        """Return the fixed text written before a value.
+
+        For a number: the quoted key, the colon and a space. For a
+        string, only the quoted key and the colon: the model writes the
+        space and the opening quote itself, so it can use its natural
+        first token (for example ' "*').
+        """
         if param_def.type == ParamTypes.STRING:
-            text += '"'
-        return text
+            return f"{json.dumps(key)}:"
+        return f"{json.dumps(key)}: "
 
     def _gen_value(self, sequence: list[int], param_def: ParamDefinition,
                    terminator: str) -> float | str | bool:
+        """Generate one parameter value of the right type."""
         if param_def.type == ParamTypes.NUMBER:
             return self.decoder.gen_number(sequence, terminator)
-        elif param_def.type == ParamTypes.STRING:
+        if param_def.type == ParamTypes.STRING:
             return self.decoder.gen_string(sequence, terminator)
         raise DecoderError(
             f"Generating '{param_def.type.value}' values is not "
@@ -42,6 +54,13 @@ class FunctionCaller:
     def _gen_parameters(self, sequence: list[int],
                         func_def: FunctionDefinition
                         ) -> dict[str, float | str | bool]:
+        """Generate every parameter of the chosen function, in order.
+
+        The sequence ends right after the function name. Fixed text
+        (keys and structure) is written directly, each piece encoded in
+        one go; the model only generates the values and their
+        terminators.
+        """
         params: dict[str, ParamDefinition] = func_def.parameters
         keys: list[str] = list(params)
         values: dict[str, float | str | bool] = {}
@@ -51,27 +70,31 @@ class FunctionCaller:
             return values
 
         self._append_text(
-            sequence, ('", "parameters": {' +
-                       self._key_text(keys[0], params[keys[0]])))
+            sequence,
+            '", "parameters": {' + self._key_text(keys[0], params[keys[0]]))
 
         for k, key in enumerate(keys):
             is_last: bool = k == len(keys) - 1
             terminator: str = "}" if is_last else ","
 
-            values[key] = self._gen_value(
-                sequence, params[key], terminator)
+            values[key] = self._gen_value(sequence, params[key], terminator)
 
             if is_last:
                 self._append_text(sequence, "}")
             else:
                 next_key: str = keys[k + 1]
                 self._append_text(
-                    sequence,
-                    " " + self._key_text(next_key, params[next_key]))
+                    sequence, " " + self._key_text(next_key, params[next_key]))
 
         return values
 
     def orchestrate(self) -> list[OutputEntry]:
+        """Generate a function call for every prompt.
+
+        The function is chosen from a prompt that lists every function.
+        The arguments are then generated from a shorter prompt that only
+        shows the chosen function, which makes each model call cheaper.
+        """
         results: list[OutputEntry] = []
         total_start: float = time.perf_counter()
 
@@ -85,6 +108,8 @@ class FunctionCaller:
                                                    self.func_names)
             func_def: FunctionDefinition = self.funcs_by_name[name]
 
+            # Values are generated from a shorter prompt that shows only
+            # the chosen function.
             sequence: list[int] = self.decoder.model.encode(
                 self.decoder.build_value_prompt(prompt, func_def))
 

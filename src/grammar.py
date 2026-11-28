@@ -8,6 +8,8 @@ class State(Enum):
     NUMBER_INT_DIGITS = "number_int_digits"
     NUMBER_AFTER_DOT = "number_after_dot"
     NUMBER_FRAC_DIGITS = "number_frac_digits"
+    STRING_START = "string_start"
+    STRING_AFTER_SPACE = "string_after_space"
     STRING_CONTENT = "string_content"
     STRING_AFTER_BACKSLASH = "string_after_backslash"
 
@@ -61,6 +63,21 @@ class Grammar:
         if state == State.NUMBER_FRAC_DIGITS:
             if char in "0123456789":
                 return State.NUMBER_FRAC_DIGITS
+            else:
+                return None
+
+        # Before a string: an optional space, then the opening quote.
+        if state == State.STRING_START:
+            if char == " ":
+                return State.STRING_AFTER_SPACE
+            elif char == '"':
+                return State.STRING_CONTENT
+            else:
+                return None
+
+        if state == State.STRING_AFTER_SPACE:
+            if char == '"':
+                return State.STRING_CONTENT
             else:
                 return None
 
